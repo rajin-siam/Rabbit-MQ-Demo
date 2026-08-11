@@ -1,0 +1,55 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"strings"
+
+	rmq "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
+)
+
+func main() {
+	const brokerURI = "amqp://guest:guest@localhost:5672/"
+	ctx := context.Background()
+	env := rmq.NewEnvironment(brokerURI, nil)
+	conn, err := env.NewConnection(ctx)
+	if err != nil {
+		log.Panicf("Failed to connect to RabbitMQ: %v", err)
+	}
+	defer func() {
+		_ = env.CloseConnections(context.Background())
+	}()
+
+	_, err = conn.Management().DeclareQueue(ctx, &rmq.QuorumQueueSpecification{Name: "task_queue"})
+	if err != nil {
+		log.Panicf("Failed to declare a queue: %v", err)
+	}
+
+	publisher, err := conn.NewPublisher(ctx, &rmq.QueueAddress{Queue: "task_queue"}, nil)
+	if err != nil {
+		log.Panicf("Failed to create publisher: %v", err)
+	}
+	defer func() { _ = publisher.Close(context.Background()) }()
+
+	body := bodyFrom(os.Args)
+	// messages are durable by default (Header.Durable=true), matching the
+	// tutorial's requirement that tasks survive a broker restart.
+	res, err := publisher.Publish(ctx, rmq.NewMessage([]byte(body)))
+	if err != nil {
+		log.Panicf("Failed to publish a message: %v", err)
+	}
+	switch res.Outcome.(type) {
+	case *rmq.StateAccepted:
+	default:
+		log.Panicf("Unexpected publish outcome: %v", res.Outcome)
+	}
+	log.Printf(" [x] Sent %s\n", body)
+}
+
+func bodyFrom(args []string) string {
+	if len(args) < 2 || args[1] == "" {
+		return "hello"
+	}
+	return strings.Join(args[1:], " ")
+}
